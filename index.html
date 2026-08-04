@@ -219,6 +219,7 @@
             align-items: center;
             z-index: 1000;
             backdrop-filter: blur(4px);
+            cursor: pointer;
         }
         .modal-overlay.show {
             display: flex;
@@ -232,6 +233,7 @@
             width: 90%;
             animation: popIn 0.3s ease;
             box-shadow: 0 30px 80px rgba(0, 0, 0, 0.9);
+            cursor: default;
         }
         @keyframes popIn {
             from {
@@ -265,22 +267,7 @@
         .modal-box .sub {
             font-size: 15px;
             color: #888;
-            margin-bottom: 20px;
-        }
-        .modal-box .btn-restart {
-            padding: 10px 40px;
-            background: #2ecc71;
-            font-size: 17px;
-            border: none;
-            border-radius: 10px;
-            color: #fff;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .modal-box .btn-restart:hover {
-            background: #27ae60;
-            transform: scale(1.03);
+            margin-bottom: 0;
         }
 
         /* ===== 菜单遮罩 ===== */
@@ -494,14 +481,14 @@
             <h1>♟ 五子棋</h1>
             <div class="subtitle">选择游戏模式</div>
             <button class="menu-btn local" id="menuLocalBtn" onclick="startLocalGame()">👥 双人对战</button>
-            <button class="menu-btn online" id="menuOnlineBtn" onclick="startOnlineGame()"> 请勿按此键 </button>
+            <button class="menu-btn online" id="menuOnlineBtn" onclick="startOnlineGame()">🌐 网络对战</button>
             <button class="menu-btn exit" onclick="exitGame()">✕ 退出</button>
             <div class="hint">
                 <kbd>ESC</kbd> 返回菜单 &nbsp;·&nbsp; <kbd>P</kbd> 让棋
             </div>
             <div class="ws-config">
                 <label>WebSocket 服务器地址</label>
-                <input type="text" id="wsUrlInput" value="ws://localhost:8765">
+                <input type="text" id="wsUrlInput" value="wss://proper-minimal-amendment-proud.trycloudflare.com">
             </div>
         </div>
     </div>
@@ -534,11 +521,10 @@
 
     <!-- ===== 胜利弹窗 ===== -->
     <div class="modal-overlay" id="winModal">
-        <div class="modal-box">
+        <div class="modal-box" id="modalBox">
             <span class="winner-emoji" id="winnerEmoji">🏆</span>
             <div class="winner" id="winnerText">黑棋 获胜！</div>
-            <div class="sub" id="winnerSub">点击下方按钮重新开始</div>
-            <button class="btn-restart" onclick="closeWinModal()">🔄 重新开始</button>
+            <div class="sub" id="winnerSub">点击任意位置关闭</div>
         </div>
     </div>
 
@@ -548,6 +534,7 @@
         // ============================================================
         const BOARD_SIZE = 15;
         const MAX_PASS = 3;
+        const RECONNECT_DELAY = 3000; // 重连延迟（毫秒）
 
         // ============================================================
         //  DOM 引用
@@ -558,6 +545,7 @@
         const passBtn = document.getElementById('passBtn');
         const passCountSpan = document.getElementById('passCount');
         const winModal = document.getElementById('winModal');
+        const modalBox = document.getElementById('modalBox');
         const winnerText = document.getElementById('winnerText');
         const winnerEmoji = document.getElementById('winnerEmoji');
         const winnerSub = document.getElementById('winnerSub');
@@ -583,8 +571,7 @@
         let isMyTurn = false;
         let winner = null;
         let isMenuOpen = true;
-        let moveHistory = [];
-        let isProcessingMove = false;
+        let isReconnecting = false;
 
         // ============================================================
         //  棋盘初始化
@@ -599,7 +586,6 @@
             passCount = 0;
             lastWasPass = false;
             winner = null;
-            moveHistory = [];
             isMyTurn = (mode === 'local' || playerColor === 'black');
             updateUI();
         }
@@ -657,7 +643,6 @@
                         const x = margin + c * cellSize;
                         const y = margin + r * cellSize;
                         const radius = cellSize / 2 - 3;
-                        // 阴影
                         ctx.shadowColor = 'rgba(0,0,0,0.3)';
                         ctx.shadowBlur = 6;
                         ctx.shadowOffsetX = 2;
@@ -723,11 +708,16 @@
             modeBtn.textContent = mode === 'local' ? '👥 双人' : '🌐 网络';
             modeBtn.className = 'btn btn-mode' + (mode === 'online' ? ' active' : '');
 
+            // 网络状态
             if (isOnline && ws && ws.readyState === WebSocket.OPEN) {
                 onlineStatusBtn.textContent = '🌐 已连接';
                 onlineStatusBtn.className = 'btn btn-online connected';
                 const colorName = playerColor === 'black' ? '⚫ 黑棋' : '⚪ 白棋';
                 onlineStatusText.innerHTML = '<span class="dot green"></span> 已连接服务器 - 你执 ' + colorName;
+            } else if (isReconnecting) {
+                onlineStatusBtn.textContent = '🌐 重连中...';
+                onlineStatusBtn.className = 'btn btn-online';
+                onlineStatusText.innerHTML = '<span class="dot yellow"></span> 连接已断开，正在重连...';
             } else if (isOnline) {
                 onlineStatusBtn.textContent = '🌐 连接中...';
                 onlineStatusBtn.className = 'btn btn-online';
@@ -815,7 +805,6 @@
 
             board[row][col] = currentPlayer;
             lastWasPass = false;
-            moveHistory.push({ row, col, player: currentPlayer });
 
             if (checkWin(row, col, currentPlayer)) {
                 gameOver = true;
@@ -900,6 +889,10 @@
             }
             if (e.key === 'Escape') {
                 e.preventDefault();
+                if (winModal.classList.contains('show')) {
+                    closeWinModalWithoutReset();
+                    return;
+                }
                 if (!isMenuOpen) {
                     showMenu();
                 }
@@ -907,7 +900,7 @@
         });
 
         // ============================================================
-        //  胜利弹窗
+        //  胜利弹窗（点击任意位置关闭，不重置棋盘）
         // ============================================================
         function showWinModal(text) {
             winnerText.textContent = text;
@@ -922,17 +915,35 @@
                 winnerText.className += ' draw';
                 winnerEmoji.textContent = '🤝';
             }
-            winnerSub.textContent = '点击下方按钮重新开始';
+            winnerSub.textContent = '点击任意位置关闭';
             winModal.classList.add('show');
+        }
+
+        function closeWinModalWithoutReset() {
+            winModal.classList.remove('show');
+            // 不调用 resetGame()，棋盘保持原样
         }
 
         function closeWinModal() {
             winModal.classList.remove('show');
-            resetGame();
+            resetGame();//<- 这个 会重置棋盘
         }
 
+        // 点击弹窗遮罩关闭（不重置棋盘）
+        winModal.addEventListener('click', function(e) {
+            if (e.target === winModal || e.target === modalBox) {
+                winModal.classList.remove('show');
+                //不调用resetGame()，棋盘保持原样
+            }
+        });
+
+        // 阻止点击弹窗内部时触发其他事件
+        modalBox.addEventListener('click', function(e) {
+            e.stopPropagation();
+        });
+
         // ============================================================
-        //  重置
+        //  重置（只有点击"重开"按钮才触发）
         // ============================================================
         function resetGame() {
             initBoard();
@@ -954,6 +965,7 @@
                 ws.close();
                 ws = null;
                 isOnline = false;
+                isReconnecting = false;
             }
         }
 
@@ -969,6 +981,7 @@
         function startLocalGame() {
             mode = 'local';
             isOnline = false;
+            isReconnecting = false;
             if (ws) { ws.close();
                 ws = null; }
             playerColor = null;
@@ -986,6 +999,7 @@
                 if (isOnline && ws) { ws.close(); }
                 mode = 'online';
                 isOnline = false;
+                isReconnecting = false;
                 ws = null;
                 playerColor = null;
                 isMyTurn = false;
@@ -993,6 +1007,7 @@
             } else {
                 mode = 'local';
                 isOnline = false;
+                isReconnecting = false;
                 if (ws) { ws.close();
                     ws = null; }
                 playerColor = null;
@@ -1006,6 +1021,7 @@
             if (isOnline && ws) {
                 ws.close();
                 isOnline = false;
+                isReconnecting = false;
                 ws = null;
                 playerColor = null;
                 isMyTurn = false;
@@ -1016,7 +1032,7 @@
         }
 
         // ============================================================
-        //  网络对战
+        //  网络对战（含自动重连）
         // ============================================================
         function startOnlineGame() {
             const btn = document.getElementById('menuOnlineBtn');
@@ -1025,6 +1041,7 @@
 
             mode = 'online';
             isOnline = true;
+            isReconnecting = false;
             playerColor = null;
             isMyTurn = false;
             initBoard();
@@ -1036,6 +1053,7 @@
                 ws.onopen = function() {
                     console.log('WebSocket 已连接');
                     isOnline = true;
+                    isReconnecting = false;
                     btn.disabled = false;
                     btn.textContent = '🌐 网络对战';
                     ws.send(JSON.stringify({ type: 'join', room: 'gomoku' }));
@@ -1052,11 +1070,7 @@
                 };
                 ws.onerror = function(error) {
                     console.error('WebSocket 错误:', error);
-                    isOnline = false;
-                    btn.disabled = false;
-                    btn.textContent = '🌐 网络对战';
-                    updateUI();
-                    alert('连接服务器失败，请检查服务器是否启动');
+                    // 不立即重连，等 onclose 触发
                 };
                 ws.onclose = function() {
                     console.log('WebSocket 已断开');
@@ -1064,6 +1078,21 @@
                     btn.disabled = false;
                     btn.textContent = '🌐 网络对战';
                     if (mode === 'online') {
+                        // 尝试自动重连
+                        if (!isReconnecting) {
+                            isReconnecting = true;
+                            updateUI();
+                            console.log(`尝试 ${RECONNECT_DELAY/1000} 秒后重连...`);
+                            setTimeout(function() {
+                                if (mode === 'online' && !isOnline) {
+                                    console.log('执行自动重连...');
+                                    isReconnecting = false;
+                                    startOnlineGame();
+                                } else {
+                                    isReconnecting = false;
+                                }
+                            }, RECONNECT_DELAY);
+                        }
                         updateUI();
                     }
                 };
@@ -1073,6 +1102,7 @@
                 btn.textContent = '🌐 网络对战';
                 mode = 'local';
                 isOnline = false;
+                isReconnecting = false;
             }
         }
 
@@ -1092,7 +1122,7 @@
                     break;
 
                 case 'sync':
-                console.log('sync 收到:', msg);
+                    console.log('sync 收到:', msg);
                     if (msg.board) {
                         board = msg.board;
                     }
@@ -1189,7 +1219,7 @@
         window.resetGame = resetGame;
         window.toggleMode = toggleMode;
         window.toggleOnline = toggleOnline;
-        window.closeWinModal = closeWinModal;
+        window.closeWinModalWithoutReset = closeWinModalWithoutReset;
         window.showMenu = showMenu;
     </script>
 </body>
