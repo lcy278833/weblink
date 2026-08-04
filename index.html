@@ -481,7 +481,7 @@
             <h1>♟ 五子棋</h1>
             <div class="subtitle">选择游戏模式</div>
             <button class="menu-btn local" id="menuLocalBtn" onclick="startLocalGame()">👥 双人对战</button>
-            <button class="menu-btn online" id="menuOnlineBtn" onclick="startOnlineGame()">🌐 网络对战</button>
+            <button class="menu-btn online" id="menuOnlineBtn" onclick="startOnlineGame()">请勿按此键</button>
             <button class="menu-btn exit" onclick="exitGame()">✕ 退出</button>
             <div class="hint">
                 <kbd>ESC</kbd> 返回菜单 &nbsp;·&nbsp; <kbd>P</kbd> 让棋
@@ -1055,7 +1055,7 @@
                     isOnline = true;
                     isReconnecting = false;
                     btn.disabled = false;
-                    btn.textContent = '🌐 网络对战';
+                    btn.textContent = '请勿按此键';
                     ws.send(JSON.stringify({ type: 'join', room: 'gomoku' }));
                     hideMenu();
                     updateUI();
@@ -1076,7 +1076,7 @@
                     console.log('WebSocket 已断开');
                     isOnline = false;
                     btn.disabled = false;
-                    btn.textContent = '🌐 网络对战';
+                    btn.textContent = '请勿按此键';
                     if (mode === 'online') {
                         // 尝试自动重连
                         if (!isReconnecting) {
@@ -1099,7 +1099,7 @@
             } catch (e) {
                 alert('无法创建 WebSocket 连接: ' + e.message);
                 btn.disabled = false;
-                btn.textContent = '🌐 网络对战';
+                btn.textContent = '请勿按此键';
                 mode = 'local';
                 isOnline = false;
                 isReconnecting = false;
